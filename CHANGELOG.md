@@ -1,5 +1,7 @@
 # Changelog
 
+All notable changes to ChopScout are documented here. The project follows [Semantic Versioning](https://semver.org/).
+
 ## 0.1.0
 
 - Added 16, 32, 48, and 64-slice MPC exports.
