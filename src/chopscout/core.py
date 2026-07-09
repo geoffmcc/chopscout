@@ -10,6 +10,7 @@ from .audio import decode_audio
 from .exporter import export_package
 from .models import AnalysisResult, ExportSettings
 from .slicing import generate_markers
+from .validation import replace_loop_duration_warning, validate_loop_duration
 
 
 @dataclass(slots=True)
@@ -36,6 +37,18 @@ def change_mode(project: LoadedProject, mode: str) -> None:
                                        project.analysis.onset_times)
 
 
+def update_loop_duration_warning(analysis: AnalysisResult, bpm: float, bars: int, beats_per_bar: int = 4) -> None:
+    result = validate_loop_duration(
+        total_samples=analysis.audio.frames,
+        sample_rate=analysis.audio.sample_rate,
+        bpm=bpm,
+        bars=bars,
+        beats_per_bar=beats_per_bar,
+    )
+    analysis.warnings = replace_loop_duration_warning(analysis.warnings, result)
+
+
 def export_project(project: LoadedProject, output: str | Path, settings: ExportSettings) -> Path:
+    update_loop_duration_warning(project.analysis, settings.bpm, settings.bars)
     return export_package(project.path, project.data, project.sample_rate, project.analysis,
                           project.markers, output, settings)
