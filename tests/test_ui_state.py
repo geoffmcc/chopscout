@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 from chopscout.analysis import beat_grid
 from chopscout.core import LoadedProject
-from chopscout.models import AnalysisResult, AudioInfo
+from chopscout.models import AnalysisResult, AudioInfo, ExportFormat
 from chopscout.playback import PlaybackMode, original_playback_context
 from chopscout.slicing import generate_markers
 from chopscout.ui import MainWindow
@@ -41,7 +41,9 @@ def make_project(path: Path, mode: str, duration: float = 4.0) -> LoadedProject:
         trim_end=info.duration,
         warnings=[],
     )
-    markers = generate_markers(mode, info.duration, analysis.selected_bpm, analysis.downbeat, analysis.onset_times)
+    markers = generate_markers(
+        mode, info.duration, analysis.selected_bpm, analysis.downbeat, analysis.onset_times
+    )
     return LoadedProject(path, data, sample_rate, analysis, markers, mode)
 
 
@@ -62,7 +64,9 @@ def test_loaded_project_mode_and_waveform_markers_stay_synchronized(app, tmp_pat
     assert window.mode.currentText() == "transient"
     assert window.project.mode == "transient"
     assert window.wave.markers == window.project.markers
-    assert window.project.markers == generate_markers("transient", 4.0, 120.0, 0.0, project.analysis.onset_times)
+    assert window.project.markers == generate_markers(
+        "transient", 4.0, 120.0, 0.0, project.analysis.onset_times
+    )
 
     window.set_chop_mode("equal16")
     assert window.mode.currentText() == "equal16"
@@ -106,11 +110,20 @@ def test_bpm_and_bar_changes_refresh_loop_duration_warning(app, tmp_path: Path):
     window = MainWindow()
     window.loaded(make_project(tmp_path / "one.wav", "equal8"))
 
-    assert not any(warning.startswith("Loop length does not closely match") for warning in window.project.analysis.warnings)
+    assert not any(
+        warning.startswith("Loop length does not closely match")
+        for warning in window.project.analysis.warnings
+    )
     window.bars.setValue(3)
-    assert any(warning.startswith("Loop length does not closely match") for warning in window.project.analysis.warnings)
+    assert any(
+        warning.startswith("Loop length does not closely match")
+        for warning in window.project.analysis.warnings
+    )
     window.bars.setValue(2)
-    assert not any(warning.startswith("Loop length does not closely match") for warning in window.project.analysis.warnings)
+    assert not any(
+        warning.startswith("Loop length does not closely match")
+        for warning in window.project.analysis.warnings
+    )
 
     window.close()
 
@@ -150,5 +163,90 @@ def test_transport_handlers_create_matching_playback_contexts(app, tmp_path: Pat
     assert window._playback_context.mode is PlaybackMode.RECONSTRUCT
     assert len(window._playback_context.segments) == len(window.project.markers)
     assert fake.play_count == 3
+
+    window.close()
+
+
+def test_gui_layout_syncs_for_equal_modes_and_is_not_asserted_for_other_modes(app, tmp_path: Path):
+    window = MainWindow()
+    window.loaded(make_project(tmp_path / "one.wav", "equal16"))
+
+    window.set_chop_mode("equal64")
+    assert window.pad_count.currentIndex() == 3
+    assert window._mode_pad_count(window.project.mode) == 64
+    assert window.pad_count.isEnabled()
+
+    window.set_chop_mode("equal8")
+    assert window._mode_pad_count(window.project.mode) is None
+    assert not window.pad_count.isEnabled()
+
+    window.set_chop_mode("transient")
+    assert window._mode_pad_count(window.project.mode) is None
+    assert not window.pad_count.isEnabled()
+
+    window.close()
+
+
+def test_gui_export_format_defaults_to_both_and_builds_matching_settings(app, tmp_path: Path):
+    window = MainWindow()
+    window.loaded(make_project(tmp_path / "one.wav", "equal16"))
+
+    assert window.export_format.currentText() == ExportFormat.BOTH.value
+    settings = window._export_settings()
+    assert settings.export_format is ExportFormat.BOTH
+    assert settings.starting_note == 36
+    assert settings.pad_count == 16
+    assert not window.start_note.isEnabled()
+
+    window.close()
+
+
+def test_gui_portable_format_allows_custom_start_note_in_settings(app, tmp_path: Path):
+    window = MainWindow()
+    window.loaded(make_project(tmp_path / "one.wav", "equal16"))
+
+    window.export_format.setCurrentText(ExportFormat.PORTABLE.value)
+    window.start_note.setValue(40)
+    settings = window._export_settings()
+
+    assert settings.export_format is ExportFormat.PORTABLE
+    assert settings.starting_note == 40
+    assert window.start_note.isEnabled()
+
+    window.close()
+
+
+def test_gui_mpc_format_resets_custom_start_note_in_settings(app, tmp_path: Path):
+    window = MainWindow()
+    window.loaded(make_project(tmp_path / "one.wav", "equal16"))
+
+    window.export_format.setCurrentText(ExportFormat.PORTABLE.value)
+    window.start_note.setValue(40)
+    window.export_format.setCurrentText(ExportFormat.MPC.value)
+    settings = window._export_settings()
+
+    assert settings.export_format is ExportFormat.MPC
+    assert settings.starting_note == 36
+    assert not window.start_note.isEnabled()
+
+    window.close()
+
+
+def test_gui_export_format_changes_do_not_leave_stale_control_state(app, tmp_path: Path):
+    window = MainWindow()
+    window.loaded(make_project(tmp_path / "one.wav", "equal16"))
+
+    window.export_format.setCurrentText(ExportFormat.PORTABLE.value)
+    assert window.start_note.isEnabled()
+    window.export_format.setCurrentText(ExportFormat.BOTH.value)
+    assert window.start_note.value() == 36
+    assert not window.start_note.isEnabled()
+    window.export_format.setCurrentText(ExportFormat.PORTABLE.value)
+    assert window.start_note.isEnabled()
+
+    window.set_chop_mode("equal8")
+    assert window.pad_count.currentIndex() == 0
+    assert not window.pad_count.isEnabled()
+    assert window.export_format.currentText() == ExportFormat.PORTABLE.value
 
     window.close()

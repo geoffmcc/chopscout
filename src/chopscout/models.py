@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,12 @@ class AnalysisResult:
         return self.selected_bpm * 2.0
 
 
+class ExportFormat(StrEnum):
+    BOTH = "both"
+    MPC = "mpc"
+    PORTABLE = "portable"
+
+
 @dataclass(slots=True)
 class ExportSettings:
     mode: str = "transient"
@@ -67,8 +74,12 @@ class ExportSettings:
     trim_silence: bool = False
     short_fades_ms: float = 2.0
     overwrite: bool = False
-    create_mpc_project: bool = True
-    pad_count: int = 16
+    export_format: ExportFormat = ExportFormat.BOTH
+    pad_count: int | None = None
+
+    @property
+    def generates_mpc(self) -> bool:
+        return ExportFormat(self.export_format) in {ExportFormat.BOTH, ExportFormat.MPC}
 
 
 @dataclass(slots=True)
