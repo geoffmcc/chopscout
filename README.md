@@ -46,8 +46,19 @@ uv run chopscout export "break.wav" --mode equal16 --output .\exports
 uv run chopscout export "break.wav" --mode equal32 --output .\exports
 uv run chopscout export "break.wav" --mode equal48 --output .\exports
 uv run chopscout export "break.wav" --mode equal64 --output .\exports
+uv run chopscout export "break.wav" --mode equal16 --starting-note 40 --format portable --output .\exports
 uv run chopscout validate ".\exports\break_172"
 ```
+
+Export formats:
+
+- `--format both` is the default. It writes portable WAV, MIDI, metadata, and preview outputs, and adds MPC XPJ/XPM output when the slice count and note mapping are MPC-compatible.
+- `--format mpc` writes the complete MPC-oriented package, including the portable support files already included with MPC exports. It requires MPC-compatible slice counts and fixed MPC notes.
+- `--format portable` writes sampler-agnostic WAV, MIDI, metadata, and preview outputs only. It does not write XPJ/XPM files and can use a custom MIDI starting note.
+
+The GUI uses the same `both`, `mpc`, and `portable` export-format choices. All formats are currently limited to 64 slices because ChopScout's naming, pad mapping, validation, and GUI are designed around MPC Banks A-D.
+
+MPC XPJ/XPM exports use the fixed MPC drum-note map shown above. Use `--format portable` when you need a custom MIDI starting note.
 
 ## Standalone XPM layout
 
