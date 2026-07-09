@@ -5,6 +5,7 @@ from scipy import signal
 
 from .audio import mono_mix
 from .models import AnalysisResult, AudioInfo
+from .validation import replace_loop_duration_warning, validate_loop_duration
 
 
 def _frame_rms(samples: np.ndarray, frame: int, hop: int) -> np.ndarray:
@@ -96,7 +97,7 @@ def analyze(data: np.ndarray, sample_rate: int, info: AudioInfo, sensitivity: fl
     downbeat = onsets[0] if onsets and onsets[0] < min(1.0, info.duration / 4) else trim_start
     interval = 60 / bpm
     beats = beat_grid(info.duration, bpm, downbeat)
-    bars_float = max(1.0, (info.duration - downbeat) / (interval * 4))
+    bars_float = max(1.0, info.duration / (interval * 4))
     bars = max(1, int(round(bars_float)))
     warnings: list[str] = []
     if tempo_conf < 0.15:
@@ -107,9 +108,13 @@ def analyze(data: np.ndarray, sample_rate: int, info: AudioInfo, sensitivity: fl
         warnings.append("The source reaches digital full scale and may be clipped.")
     if abs(info.dc_offset) > 0.01:
         warnings.append("The source has measurable DC offset.")
-    expected = bars * 4 * interval
-    if abs((info.duration - downbeat) - expected) > interval * 0.15:
-        warnings.append("Loop length does not closely match the selected BPM and bar count.")
+    duration_check = validate_loop_duration(
+        total_samples=info.frames,
+        sample_rate=sample_rate,
+        bpm=bpm,
+        bars=bars,
+    )
+    warnings = replace_loop_duration_warning(warnings, duration_check)
     return AnalysisResult(
         audio=info, detected_bpm=bpm, selected_bpm=bpm, tempo_confidence=tempo_conf,
         beat_times=beats, onset_times=onsets, onset_strengths=strengths,
