@@ -17,6 +17,7 @@ The GUI and CLI call the same application core. No audio or MPC logic lives in t
 | `validation.py` | Loop-duration validation with decoder-aware tolerance; warning formatting |
 | `playback.py` | Playback context objects mapping media-player positions back to waveform positions and active slices |
 | `session.py` | Versioned session persistence: atomic save, migrating/validating load of untrusted session files (schema versioning, forward-migration, future-version rejection), source-audio hash checking (ok/missing/changed), and source relinking |
+| `autosave.py` | Crash-recovery slot: atomic autosave of the active session as a session file with extra metadata keys, tolerant read-back, and clearing on clean exit |
 | `config.py` | GUI configuration persistence via platformdirs, including the recent-sessions list |
 | `logging_config.py` | File and console logging setup via platformdirs |
 | `core.py` | Orchestration: `load_project`, `change_mode`, `export_project` |

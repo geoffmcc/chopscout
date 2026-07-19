@@ -13,6 +13,7 @@ from . import __version__
 from .audio import source_hash
 from .models import SESSION_SCHEMA_VERSION, ExportFormat, ExportSettings, Session
 
+SESSION_SUFFIX = ".chopscout.json"
 MAX_SESSION_BYTES = 5_000_000
 MAX_SESSION_MARKERS = 4096
 MAX_SESSION_SECONDS = 1e6
@@ -30,24 +31,62 @@ class SourceStatus(StrEnum):
     UNVERIFIED = "unverified"
 
 
-def save_session(path: str | Path, session: Session) -> None:
-    """Write a session atomically (exclusive temp file + rename) in the current schema."""
-    session.schema_version = SESSION_SCHEMA_VERSION
-    session.app_version = __version__
-    if session.source_size <= 0 and not is_remote_path(session.source_path):
-        session.source_size = _probe_source_size(session.source_path)
+def write_json_atomic(
+    path: str | Path, payload: str, description: str = "file", file_mode: int | None = None
+) -> None:
+    """Write text through an exclusive temp file and an atomic rename.
+
+    Shared by session saves and autosaves so there is only one write path that
+    can leave a partial file behind. `file_mode` is applied before the rename,
+    so the destination is never briefly readable at a wider mode.
+    """
     destination = Path(path)
-    payload = json.dumps(session.to_dict(), indent=2)
-    temporary = destination.with_name(f".{destination.name}.tmp-{secrets.token_hex(8)}")
+    try:
+        temporary = destination.with_name(f".{destination.name}.tmp-{secrets.token_hex(8)}")
+    except ValueError as exc:
+        raise SessionError(f"Could not save the {description}: invalid path: {exc}") from exc
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         with temporary.open("x", encoding="utf-8") as handle:
             handle.write(payload)
+        if file_mode is not None:
+            os.chmod(temporary, file_mode)
         os.replace(temporary, destination)
     except OSError as exc:
-        raise SessionError(f"Could not save the session file: {destination}: {exc}") from exc
+        raise SessionError(f"Could not save the {description}: {destination}: {exc}") from exc
     finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def session_payload(session: Session) -> dict[str, Any]:
+    """Stamp a session with the current schema/app version and return its dict."""
+    session.schema_version = SESSION_SCHEMA_VERSION
+    session.app_version = __version__
+    if session.source_size <= 0 and not is_remote_path(session.source_path):
+        session.source_size = _probe_source_size(session.source_path)
+    return session.to_dict()
+
+
+def save_session(path: str | Path, session: Session) -> None:
+    """Write a session atomically (exclusive temp file + rename) in the current schema."""
+    write_json_atomic(path, encode_session(session, "session file"), "session file")
+
+
+def encode_session(session: Session, description: str = "session") -> str:
+    """Serialize a session, refusing NaN/Infinity rather than writing a file that
+    could never be read back (load_session rejects those tokens)."""
+    try:
+        return json.dumps(session_payload(session), indent=2, allow_nan=False)
+    except ValueError as exc:
+        raise SessionError(f"Could not encode the {description}: {exc}") from exc
+
+
+def check_source(session: Session) -> SourceStatus:
+    """Verify a session's source audio. Never probes remote paths."""
+    return _source_status(session, True)
 
 
 def load_session(path: str | Path, verify_source: bool = True) -> tuple[Session, SourceStatus]:

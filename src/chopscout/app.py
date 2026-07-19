@@ -25,4 +25,5 @@ def main() -> int:
     app.setOrganizationName("ChopScout")
     app.setStyleSheet(DARK_STYLE)
     window = MainWindow(); window.show()
+    window.offer_recovery()
     return app.exec()
