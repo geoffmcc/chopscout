@@ -16,7 +16,7 @@ The GUI and CLI call the same application core. No audio or MPC logic lives in t
 | `mpc.py` | MPC 3.9.0 XPJ/XPM generation and validation from bundled ACVS fixtures; pad/note mapping; sample and instrument configuration |
 | `validation.py` | Loop-duration validation with decoder-aware tolerance; warning formatting |
 | `playback.py` | Playback context objects mapping media-player positions back to waveform positions and active slices |
-| `session.py` | Session save/load with source-hash change detection |
+| `session.py` | Versioned session persistence: atomic save, migrating/validating load of untrusted session files (schema versioning, forward-migration, future-version rejection), source-audio hash checking (ok/missing/changed), and source relinking |
 | `config.py` | GUI configuration persistence via platformdirs |
 | `logging_config.py` | File and console logging setup via platformdirs |
 | `core.py` | Orchestration: `load_project`, `change_mode`, `export_project` |

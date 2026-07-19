@@ -54,7 +54,7 @@ uv run ruff check .
 | `test_models.py` | Deterministic project name derivation |
 | `test_validation.py` | Loop-duration validation across sample rates, BPMs, and bar counts; beats-per-bar support; rejection of meaningful timing errors |
 | `test_playback.py` | Playback context mapping for original, slice, and reconstruct modes; boundary conditions; stale-generation handling |
-| `test_session.py` | Session round-trip save and load with source-hash change detection |
+| `test_session.py` | Session round-trip, v1 migration, future-version rejection, malformed/hostile session files, missing/changed source detection, relink workflow, atomic save |
 | `test_core.py` | Loop-duration warning refresh on BPM/bar changes during export |
 | `test_mpc_program.py` | 16-pad and 64-pad XPM generation, round-trip validation, pad-note map, sample table order |
 | `test_mpc_project.py` | 16-pad and 64-pad XPJ generation, sequence events, bar count, BPM, Bank D slot configuration |

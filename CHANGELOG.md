@@ -4,6 +4,12 @@ All notable changes to ChopScout are documented here. The project follows [Seman
 
 ## Unreleased
 
+- Hardened the session core ahead of the GUI session workflow: sessions are now versioned
+  (schema 2) with forward migration from the legacy format and rejection of newer formats;
+  loading validates untrusted session files (types, finite numbers, size and marker caps)
+  instead of crashing; saves are atomic; source audio is verified by hash with distinct
+  ok/missing/changed states; and a relink API re-points a session at moved audio, requiring
+  explicit consent to rebind to different audio.
 - Cleaned up stale and unfinished contracts: removed the never-implemented
   `ExportSettings.trim_silence` flag, the unused `SliceMarker` model, the unused config
   `theme` field, the constant `xpj_export_available`/`xpm_export_available` functions, and the
