@@ -4,6 +4,11 @@ All notable changes to ChopScout are documented here. The project follows [Seman
 
 ## Unreleased
 
+- Added GitHub Actions CI: lint, full test suite on Linux and Windows across Python
+  3.11-3.13 with headless GUI tests, a Windows PyInstaller build smoke test whose output is
+  discarded, and lockfile/version consistency checks. CI is verification-only — read-only
+  permissions, SHA-pinned actions, no secrets, no artifact uploads, and no release or
+  publishing jobs.
 - Deepened package validation beyond file existence: generated WAVs are opened and checked for
   readable headers, sample rate, channel count, and expected lengths; all four MIDI files are
   parsed and checked for note sequence, tempo, and marker-accurate original-groove timing;

@@ -1,5 +1,35 @@
 # Testing
 
+## Continuous integration
+
+Every push to `main` and every pull request runs `.github/workflows/ci.yml`. CI verifies; it
+never publishes. There are no release jobs, no uploaded executables, and no deployment — the
+Windows build-smoke output is discarded when the runner is destroyed. The workflow runs with
+read-only repository permissions, uses no secrets, and pins every action to an immutable
+commit SHA.
+
+CI verifies:
+
+- **lint** — `ruff check .` on Linux.
+- **test** — the full pytest suite on Linux and Windows across Python 3.11, 3.12, and 3.13,
+  with FFmpeg installed and GUI tests running headless (`QT_QPA_PLATFORM=offscreen`). This
+  covers the core, CLI, export, package-validation, session, and GUI-state tests, and
+  regenerates the synthetic fixture to confirm the generator stays deterministic.
+- **build-smoke** — `scripts/build_windows.py` (PyInstaller) on Windows, verifying the
+  executable is produced. The output is deliberately not uploaded anywhere.
+- **metadata** — `uv lock --check` (lockfile matches `pyproject.toml`) and that
+  `chopscout.__version__` matches the `pyproject.toml` version.
+
+The job names `lint`, `test (...)`, `build-smoke`, and `metadata` are stable so they can later
+be marked as required status checks. Repository protection settings are not changed by CI.
+
+What remains manual:
+
+- MPC hardware validation (see below) — never claimed by CI.
+- Launching the built Windows executable (the smoke test builds a windowed app; CI cannot run
+  it headlessly) and any listening/audio-quality checks.
+- Dependency caching is deliberately not enabled yet; each run installs from the lockfile.
+
 ## Running the test suite
 
 Generate the synthetic fixture first, then run the full suite:
