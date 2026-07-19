@@ -81,9 +81,18 @@ class ExportSettings:
         return ExportFormat(self.export_format) in {ExportFormat.BOTH, ExportFormat.MPC}
 
 
+SESSION_SCHEMA_VERSION = 2
+
+
 @dataclass(slots=True)
 class Session:
-    version: str
+    """A saved ChopScout working state.
+
+    Persisted as versioned JSON by `session.save_session`; always load through
+    `session.load_session`, which migrates older schema versions, rejects newer
+    ones, and validates untrusted content.
+    """
+
     source_path: str
     source_hash: str
     detected_bpm: float
@@ -94,13 +103,12 @@ class Session:
     chop_mode: str
     pad_map: dict[str, int]
     export_settings: dict[str, Any]
+    schema_version: int = SESSION_SCHEMA_VERSION
+    app_version: str = ""
+    source_size: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-    @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "Session":
-        return cls(**value)
 
 
 def deterministic_project_name(path: str | Path, bpm: float) -> str:
