@@ -3,18 +3,21 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import math
 import os
 import secrets
 import shutil
 from dataclasses import asdict
+from itertools import islice
 from pathlib import Path
 
 import mido
 import numpy as np
+import soundfile as sf
 
 from . import __version__
 from .audio import apply_edge_fades, write_wav
-from .midi import write_reconstruction
+from .midi import seconds_to_ticks, write_reconstruction
 from .models import AnalysisResult, ExportFormat, ExportSettings, deterministic_project_name
 from .mpc import (
     MpcCompatibilityError,
@@ -29,6 +32,43 @@ MPC_STARTING_NOTE = 36
 SUPPORTED_MPC_SLICE_COUNTS = (16, 32, 48, 64)
 
 logger = logging.getLogger(__name__)
+
+WAV_FRAME_TOLERANCE = 2
+MIDI_BPM_TOLERANCE = 0.1
+MIDI_TICK_TOLERANCE = 1
+TIME_EPSILON = 1e-6
+MAX_VALIDATED_ROWS = 64
+MAX_VALIDATED_SECONDS = 1e6
+MAX_VALIDATED_BPM = 1e5
+
+
+def _reject_json_constant(value: str) -> float:
+    raise ValueError(f"unsupported JSON constant: {value}")
+
+
+def _finite(value, minimum: float | None = None, maximum: float | None = None) -> float | None:
+    """Return value as a bounded finite float, or None when it is not one."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        result = float(value)
+    except OverflowError:
+        return None
+    if not math.isfinite(result):
+        return None
+    if minimum is not None and result < minimum:
+        return None
+    if maximum is not None and result > maximum:
+        return None
+    return result
+
+
+def _safe_filename(value) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    if "/" in value or "\\" in value or Path(value).name != value:
+        return None
+    return value
 
 
 class ExportError(RuntimeError):
@@ -382,10 +422,13 @@ def validate_package(root: str | Path) -> list[str]:
     required = [
         root / "metadata" / "chopscout.json",
         root / "metadata" / "slice_map.csv",
-        root / "midi" / "original_groove.mid",
     ]
     for path in required:
-        if not path.is_file() or path.stat().st_size == 0:
+        try:
+            missing = not path.is_file() or path.stat().st_size == 0
+        except OSError:
+            missing = True
+        if missing:
             problems.append(f"Missing or empty required file: {path.relative_to(root)}")
     chop_dirs = list(root.glob("chops_*"))
     if len(chop_dirs) != 1:
@@ -393,10 +436,38 @@ def validate_package(root: str | Path) -> list[str]:
     elif not list(chop_dirs[0].glob("*.wav")):
         problems.append("No WAV slices were exported.")
     try:
-        metadata = json.loads((root / "metadata" / "chopscout.json").read_text(encoding="utf-8"))
-        rows = list(
-            csv.DictReader((root / "metadata" / "slice_map.csv").open(newline="", encoding="utf-8"))
+        metadata = json.loads(
+            (root / "metadata" / "chopscout.json").read_text(encoding="utf-8"),
+            parse_constant=_reject_json_constant,
         )
+        with (root / "metadata" / "slice_map.csv").open(newline="", encoding="utf-8") as handle:
+            rows = list(islice(csv.DictReader(handle), MAX_VALIDATED_ROWS + 1))
+    except (OSError, ValueError, csv.Error) as exc:
+        log_detail = f": {exc}" if str(exc) else ""
+        problems.append(f"Metadata JSON is unreadable{log_detail}.")
+        return problems
+    try:
+        if not isinstance(metadata, dict):
+            problems.append("Metadata JSON is not an object.")
+            metadata = {}
+        if not isinstance(metadata.get("export", {}), dict):
+            problems.append("Metadata export section is invalid.")
+            metadata["export"] = {}
+        if not isinstance(metadata.get("audio", {}), dict):
+            problems.append("Metadata audio section is invalid.")
+            metadata["audio"] = {}
+        if not isinstance(metadata.get("markers_seconds", []), list):
+            problems.append("Metadata markers_seconds is invalid.")
+            metadata["markers_seconds"] = []
+        if not isinstance(metadata.get("slice_map", []), list):
+            problems.append("Metadata slice_map is invalid.")
+            metadata["slice_map"] = []
+        if len(rows) > MAX_VALIDATED_ROWS:
+            problems.append(
+                f"Slice map has more than {MAX_VALIDATED_ROWS} rows; "
+                f"the maximum supported is {MAX_VALIDATED_ROWS}."
+            )
+            rows = rows[:MAX_VALIDATED_ROWS]
         export_settings = metadata.get("export", {})
         try:
             export_format = ExportFormat(
@@ -422,7 +493,7 @@ def validate_package(root: str | Path) -> list[str]:
         if pad_count is not None and rows:
             try:
                 parsed_pad_count = int(pad_count)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 problems.append("Metadata pad_count is not an integer.")
                 parsed_pad_count = None
             if parsed_pad_count is not None and parsed_pad_count != len(rows):
@@ -435,19 +506,18 @@ def validate_package(root: str | Path) -> list[str]:
         actual_filenames = [row.get("filename") for row in rows]
         if rows and actual_filenames != expected_filenames:
             problems.append("Slice map filenames are not in Bank A-D pad order.")
+        expected_notes: list[int] = []
         if rows:
             try:
                 expected_notes = [int(row["midi_note"]) for row in rows]
-            except (KeyError, ValueError):
+            except (KeyError, TypeError, ValueError, OverflowError):
                 problems.append("Slice map MIDI notes are invalid.")
                 expected_notes = []
-            try:
-                midi_notes = _midi_note_ons(root / "midi" / "original_groove.mid")
-            except Exception as exc:
-                problems.append(f"Original-groove MIDI is unreadable: {exc}")
-                midi_notes = []
-            if midi_notes and expected_notes and midi_notes != expected_notes:
-                problems.append("Original-groove MIDI notes do not match slice map MIDI notes.")
+        problems.extend(_validate_metadata_consistency(root, rows, metadata))
+        problems.extend(
+            _validate_wav_files(root, chop_dirs[0] if len(chop_dirs) == 1 else None, rows, metadata)
+        )
+        problems.extend(_validate_midi_files(root, expected_notes, metadata))
         project_generated = metadata.get("mpc_project_generated")
         program_generated = metadata.get("mpc_program_generated")
         projects = list((root / "mpc_project").glob("*/*.xpj"))
@@ -500,17 +570,225 @@ def validate_package(root: str | Path) -> list[str]:
                     problems.append(
                         "MPC program was generated with non-fixed MIDI starting note metadata."
                     )
-    except (OSError, json.JSONDecodeError, KeyError) as exc:
-        log_detail = f": {exc}" if str(exc) else ""
-        problems.append(f"Metadata JSON is unreadable{log_detail}.")
+    except Exception as exc:
+        problems.append(f"Package validation failed ({type(exc).__name__}: {exc}).")
     return problems
 
 
-def _midi_note_ons(path: Path) -> list[int]:
-    midi = mido.MidiFile(path)
-    return [
-        message.note
-        for track in midi.tracks
-        for message in track
-        if message.type == "note_on" and message.velocity > 0
+def _validate_metadata_consistency(root: Path, rows: list[dict], metadata: dict) -> list[str]:
+    problems: list[str] = []
+    audio_meta = metadata.get("audio", {})
+    duration = _finite(audio_meta.get("duration"), minimum=TIME_EPSILON, maximum=MAX_VALIDATED_SECONDS)
+    if "duration" in audio_meta and duration is None:
+        problems.append("Metadata audio duration is not a finite positive number.")
+    markers = metadata.get("markers_seconds", [])
+    numeric_markers = [
+        _finite(value, minimum=-MAX_VALIDATED_SECONDS, maximum=MAX_VALIDATED_SECONDS)
+        for value in markers
     ]
+    for value, numeric in zip(markers, numeric_markers, strict=True):
+        if numeric is None:
+            problems.append(f"Metadata marker {value!r} is not a finite number.")
+            break
+        if duration is not None and (numeric < -TIME_EPSILON or numeric > duration + TIME_EPSILON):
+            problems.append(f"Metadata marker {value!r} is outside the audio duration.")
+            break
+    if all(value is not None for value in numeric_markers) and any(
+        b <= a - TIME_EPSILON for a, b in zip(numeric_markers, numeric_markers[1:], strict=False)
+    ):
+        problems.append("Metadata markers are not in ascending order.")
+    for row in rows:
+        pad = row.get("pad", "?")
+        try:
+            start = float(row["start_seconds"])
+            end = float(row["end_seconds"])
+        except (KeyError, TypeError, ValueError):
+            problems.append(f"Slice map row {pad} has invalid start/end times.")
+            continue
+        if not (math.isfinite(start) and math.isfinite(end)):
+            problems.append(f"Slice map row {pad} has non-finite start/end times.")
+            continue
+        if end <= start:
+            problems.append(f"Slice map row {pad} has a non-positive duration.")
+        if duration is not None and end > duration + 0.001:
+            problems.append(f"Slice map row {pad} ends beyond the audio duration.")
+    source_name = _safe_filename(metadata.get("source_filename"))
+    if source_name is None:
+        problems.append("Metadata source_filename is not a safe bare filename.")
+    elif not (root / "source" / source_name).is_file():
+        problems.append(f"Source copy is missing: source/{source_name}")
+    meta_rows = metadata.get("slice_map", [])
+    if rows and isinstance(meta_rows, list):
+        csv_pads = [(row.get("pad"), row.get("filename")) for row in rows]
+        json_pads = [
+            (row.get("pad"), row.get("filename")) for row in meta_rows if isinstance(row, dict)
+        ]
+        if csv_pads != json_pads:
+            problems.append("Metadata slice_map does not match slice_map.csv.")
+    return problems
+
+
+def _validate_wav_files(
+    root: Path, chop_dir: Path | None, rows: list[dict], metadata: dict
+) -> list[str]:
+    problems: list[str] = []
+    audio_meta = metadata.get("audio", {})
+
+    def bounded_int(key: str, minimum: int, maximum: int) -> int | None:
+        value = audio_meta.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+            if key in audio_meta:
+                problems.append(f"Metadata audio {key} is invalid.")
+            return None
+        return value
+
+    expected_rate = bounded_int("sample_rate", 1, 10_000_000)
+    expected_channels = bounded_int("channels", 1, 1024)
+    expected_frames = bounded_int("frames", 0, 2**62)
+
+    def inspect(path: Path, label: str):
+        try:
+            return sf.info(path)
+        except Exception as exc:
+            problems.append(f"WAV file is unreadable: {label}: {exc}")
+            return None
+
+    def check_format(info, label: str) -> None:
+        if expected_rate is not None and info.samplerate != expected_rate:
+            problems.append(
+                f"{label}: sample rate {info.samplerate} does not match metadata {expected_rate}."
+            )
+        if expected_channels is not None and info.channels != expected_channels:
+            problems.append(
+                f"{label}: channel count {info.channels} does not match metadata {expected_channels}."
+            )
+        if info.frames <= 0:
+            problems.append(f"{label}: contains no audio frames.")
+
+    full_loops = sorted(path for path in (root / "full_loop").glob("*.wav") if path.is_file())
+    if len(full_loops) != 1:
+        problems.append("Expected exactly one full-loop WAV.")
+    else:
+        label = f"full_loop/{full_loops[0].name}"
+        info = inspect(full_loops[0], label)
+        if info:
+            check_format(info, label)
+            if (
+                expected_frames is not None
+                and abs(info.frames - expected_frames) > WAV_FRAME_TOLERANCE
+            ):
+                problems.append(
+                    f"{label}: length {info.frames} frames does not match metadata {expected_frames}."
+                )
+    preview = root / "preview" / "reconstructed_preview.wav"
+    if not preview.is_file() or preview.stat().st_size == 0:
+        problems.append("Missing or empty required file: preview/reconstructed_preview.wav")
+    else:
+        info = inspect(preview, "preview/reconstructed_preview.wav")
+        if info:
+            check_format(info, "preview/reconstructed_preview.wav")
+    if chop_dir is not None and rows:
+        for row in rows:
+            filename = _safe_filename(row.get("filename"))
+            if filename is None:
+                problems.append(
+                    f"Slice map filename is not a safe bare filename: {row.get('filename')!r}"
+                )
+                continue
+            label = f"{chop_dir.name}/{filename}"
+            path = chop_dir / filename
+            if not path.is_file():
+                problems.append(f"Missing WAV slice: {label}")
+                continue
+            info = inspect(path, label)
+            if not info:
+                continue
+            check_format(info, label)
+            if expected_rate is None:
+                continue
+            try:
+                start = float(row["start_seconds"])
+                end = float(row["end_seconds"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (math.isfinite(start) and math.isfinite(end)) or max(abs(start), abs(end)) > MAX_VALIDATED_SECONDS:
+                continue
+            expected = round(end * expected_rate) - round(start * expected_rate)
+            if abs(info.frames - expected) > WAV_FRAME_TOLERANCE:
+                problems.append(
+                    f"{label}: length {info.frames} frames does not match the slice map "
+                    f"({expected} frames)."
+                )
+    return problems
+
+
+MIDI_SPECS = (
+    ("original_groove.mid", 1.0, True),
+    ("straightened.mid", 1.0, False),
+    ("half_time.mid", 0.5, False),
+    ("double_time.mid", 2.0, False),
+)
+
+
+def _validate_midi_files(root: Path, expected_notes: list[int], metadata: dict) -> list[str]:
+    problems: list[str] = []
+    export_settings = metadata.get("export", {})
+    bpm = _finite(export_settings.get("bpm"), minimum=1e-3, maximum=MAX_VALIDATED_BPM)
+    if "bpm" in export_settings and bpm is None:
+        problems.append("Metadata export bpm is not a finite positive number.")
+    has_bpm = bpm is not None
+    markers = metadata.get("markers_seconds", [])
+    numeric_markers = [
+        _finite(value, minimum=-MAX_VALIDATED_SECONDS, maximum=MAX_VALIDATED_SECONDS)
+        for value in markers
+    ]
+    markers_ok = bool(numeric_markers) and all(value is not None for value in numeric_markers)
+    for filename, scale, check_timing in MIDI_SPECS:
+        label = f"midi/{filename}"
+        path = root / "midi" / filename
+        if not path.is_file() or path.stat().st_size == 0:
+            problems.append(f"Missing or empty required file: {label}")
+            continue
+        try:
+            midi = mido.MidiFile(path)
+        except Exception as exc:
+            problems.append(f"MIDI file is unreadable: {label}: {exc}")
+            continue
+        if not midi.tracks:
+            problems.append(f"{label}: contains no tracks.")
+            continue
+        note_ons: list[int] = []
+        abs_ticks: list[int] = []
+        for track in midi.tracks:
+            tick = 0
+            for message in track:
+                tick += message.time
+                if message.type == "note_on" and message.velocity > 0:
+                    note_ons.append(message.note)
+                    abs_ticks.append(tick)
+        if expected_notes and note_ons != expected_notes:
+            problems.append(f"{label}: note sequence does not match the slice map.")
+        tempos = [
+            message for track in midi.tracks for message in track if message.type == "set_tempo"
+        ]
+        if not tempos:
+            problems.append(f"{label}: has no tempo message.")
+        elif tempos[0].tempo <= 0:
+            problems.append(f"{label}: tempo message is invalid.")
+        elif has_bpm:
+            actual_bpm = mido.tempo2bpm(tempos[0].tempo)
+            if abs(actual_bpm - bpm * scale) > MIDI_BPM_TOLERANCE:
+                problems.append(
+                    f"{label}: tempo {actual_bpm:.2f} BPM does not match "
+                    f"expected {bpm * scale:.2f} BPM."
+                )
+        if check_timing and has_bpm and markers_ok and len(abs_ticks) == len(numeric_markers):
+            for index, (tick, marker) in enumerate(zip(abs_ticks, numeric_markers, strict=True)):
+                expected_tick = seconds_to_ticks(marker, bpm)
+                if abs(tick - expected_tick) > MIDI_TICK_TOLERANCE:
+                    problems.append(
+                        f"{label}: note {index + 1} starts at tick {tick}, "
+                        f"expected tick {expected_tick}."
+                    )
+                    break
+    return problems
