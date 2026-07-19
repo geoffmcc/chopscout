@@ -102,7 +102,22 @@ first (a GUI overwrite control is planned in a later phase).
 
 ### `validate`
 
-Checks an exported package for structural integrity: required files, slice-map and metadata consistency, WAV counts, MIDI note alignment, and MPC artifact round-trip validation. Prints `Package is valid.` on success or a list of problems.
+Checks an exported package for structural and content integrity. Beyond verifying that the
+required files exist, validation opens and inspects the generated audio and MIDI content:
+
+- Every generated WAV (full loop, preview, and each slice) must be readable and match the
+  package metadata's sample rate and channel count; slice lengths must match the slice map and
+  the full loop must match the recorded source length.
+- All four MIDI files are parsed and must contain the expected note sequence, a tempo matching
+  the exported BPM (half- and double-time files at their scaled tempi), and — for the original
+  groove — note timing matching the recorded slice markers.
+- Metadata is cross-checked rather than trusted: markers must be ordered and inside the audio
+  duration, slice-map rows must agree between `slice_map.csv` and `chopscout.json`, the source
+  filename must be a safe bare filename, and the source copy must be present.
+- MPC XPJ/XPM artifacts are parsed and round-trip validated, including that referenced samples
+  exist inside the package.
+
+Prints `Package is valid.` on success or a list of problems naming each failing file and reason.
 
 ### Chop modes
 

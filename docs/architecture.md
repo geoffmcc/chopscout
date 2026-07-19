@@ -43,6 +43,12 @@ Heavy GUI work (audio loading and exporting) runs in `QThreadPool` workers via `
 - Exports are deterministic for the same source, settings, and markers.
 - The original source file is never modified; a copy is placed in the export's `source/` folder.
 - Generated MPC XPJ/XPM files are read back and structurally validated before an export is reported as successful.
+- Package validation opens generated content rather than trusting metadata: WAVs are read back
+  and checked for sample rate, channel count, and expected length; all four MIDI files are
+  parsed and checked for note sequence, tempo, and (for the original groove) marker-accurate
+  timing; metadata is cross-checked against the slice map and the files on disk. One
+  implementation (`exporter.validate_package`) serves the exporter's pre-swap check, the CLI
+  `validate` command, the GUI, and the tests.
 - The `validate` command re-checks any package on demand.
 - Output folders are not overwritten unless `--overwrite` is passed.
 

@@ -4,6 +4,12 @@ All notable changes to ChopScout are documented here. The project follows [Seman
 
 ## Unreleased
 
+- Deepened package validation beyond file existence: generated WAVs are opened and checked for
+  readable headers, sample rate, channel count, and expected lengths; all four MIDI files are
+  parsed and checked for note sequence, tempo, and marker-accurate original-groove timing;
+  metadata is cross-checked against the slice map, the source copy, and the files on disk, and
+  unsafe or out-of-range metadata values are rejected with errors naming the failing file.
+- Added malformed-package and corrupted-file validation tests.
 - Made export replacement transactional: packages are built in a hidden sibling temporary
   folder, fully validated there, and atomically swapped into place. Overwrites keep the
   previous export as a temporary backup until the replacement succeeds and restore it if the
