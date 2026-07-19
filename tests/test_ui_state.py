@@ -21,6 +21,12 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+def close_window(window: MainWindow) -> None:
+    """Close without the unsaved-changes prompt, which would block a headless run."""
+    window._mark_clean()
+    window.close()
+
+
 def make_project(path: Path, mode: str, duration: float = 4.0) -> LoadedProject:
     sample_rate = 1000
     data = np.zeros((round(duration * sample_rate), 1), dtype=np.float32)
@@ -82,7 +88,7 @@ def test_loaded_project_mode_and_waveform_markers_stay_synchronized(app, tmp_pat
     assert window.wave.markers == window.project.markers
     assert max(window.wave.markers) < second.analysis.audio.duration
 
-    window.close()
+    close_window(window)
 
 
 def test_player_position_updates_waveform_and_stop_resets_visuals(app, tmp_path: Path):
@@ -103,7 +109,7 @@ def test_player_position_updates_waveform_and_stop_resets_visuals(app, tmp_path:
     assert window.wave.playhead is None
     assert window.wave.active_slice is None
 
-    window.close()
+    close_window(window)
 
 
 def test_bpm_and_bar_changes_refresh_loop_duration_warning(app, tmp_path: Path):
@@ -125,7 +131,7 @@ def test_bpm_and_bar_changes_refresh_loop_duration_warning(app, tmp_path: Path):
         for warning in window.project.analysis.warnings
     )
 
-    window.close()
+    close_window(window)
 
 
 def test_transport_handlers_create_matching_playback_contexts(app, tmp_path: Path, monkeypatch):
@@ -164,7 +170,7 @@ def test_transport_handlers_create_matching_playback_contexts(app, tmp_path: Pat
     assert len(window._playback_context.segments) == len(window.project.markers)
     assert fake.play_count == 3
 
-    window.close()
+    close_window(window)
 
 
 def test_gui_layout_syncs_for_equal_modes_and_is_not_asserted_for_other_modes(app, tmp_path: Path):
@@ -184,7 +190,7 @@ def test_gui_layout_syncs_for_equal_modes_and_is_not_asserted_for_other_modes(ap
     assert window._mode_pad_count(window.project.mode) is None
     assert not window.pad_count.isEnabled()
 
-    window.close()
+    close_window(window)
 
 
 def test_gui_export_format_defaults_to_both_and_builds_matching_settings(app, tmp_path: Path):
@@ -198,7 +204,7 @@ def test_gui_export_format_defaults_to_both_and_builds_matching_settings(app, tm
     assert settings.pad_count == 16
     assert not window.start_note.isEnabled()
 
-    window.close()
+    close_window(window)
 
 
 def test_gui_portable_format_allows_custom_start_note_in_settings(app, tmp_path: Path):
@@ -213,7 +219,7 @@ def test_gui_portable_format_allows_custom_start_note_in_settings(app, tmp_path:
     assert settings.starting_note == 40
     assert window.start_note.isEnabled()
 
-    window.close()
+    close_window(window)
 
 
 def test_gui_mpc_format_resets_custom_start_note_in_settings(app, tmp_path: Path):
@@ -229,7 +235,7 @@ def test_gui_mpc_format_resets_custom_start_note_in_settings(app, tmp_path: Path
     assert settings.starting_note == 36
     assert not window.start_note.isEnabled()
 
-    window.close()
+    close_window(window)
 
 
 def test_gui_export_format_changes_do_not_leave_stale_control_state(app, tmp_path: Path):
@@ -249,7 +255,7 @@ def test_gui_export_format_changes_do_not_leave_stale_control_state(app, tmp_pat
     assert not window.pad_count.isEnabled()
     assert window.export_format.currentText() == ExportFormat.PORTABLE.value
 
-    window.close()
+    close_window(window)
 
 
 def test_gui_overwrite_checkbox_defaults_off_and_flows_into_settings(app, tmp_path: Path):
@@ -262,4 +268,4 @@ def test_gui_overwrite_checkbox_defaults_off_and_flows_into_settings(app, tmp_pa
     window.overwrite.setChecked(True)
     assert window._export_settings().overwrite is True
 
-    window.close()
+    close_window(window)

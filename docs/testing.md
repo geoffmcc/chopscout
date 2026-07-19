@@ -60,6 +60,7 @@ uv run ruff check .
 | `test_mpc_project.py` | 16-pad and 64-pad XPJ generation, sequence events, bar count, BPM, Bank D slot configuration |
 | `test_integration.py` | End-to-end decode-analyze-export-validate, all three export formats, pad-count contracts, custom starting-note rules, CLI behavior, 64-slice maximum across formats, package validation edge cases |
 | `test_ui_state.py` | GUI mode/marker synchronization, playback position mapping, BPM/bar warning refresh, transport contexts, export-format control state, pad-count layout sync (requires `QT_QPA_PLATFORM=offscreen`) |
+| `test_ui_session.py` | GUI session workflow: state capture and restore, manual-marker round trip, dirty tracking, window title, recent sessions, New, discard prompts on close, malformed-session reporting (requires `QT_QPA_PLATFORM=offscreen`) |
 
 ## Fixture generation
 
