@@ -80,6 +80,26 @@ Analyzes the input, slices it, and writes a validated package. Options:
 | `--format` | `both` | Export target (see [Export formats](#export-formats)) |
 | `--overwrite` | off | Replace an existing output folder |
 
+#### Overwrite and recovery guarantees
+
+Exports are transactional. The package is first built in a hidden temporary folder next to the
+destination (on the same drive), fully validated there, and only then moved into place. When
+`--overwrite` replaces an existing export, the previous package is kept as a temporary backup
+until the replacement has fully succeeded:
+
+- If anything fails while generating WAV, MIDI, or MPC artifacts — or if the new package fails
+  validation — the existing export is left untouched and the temporary build folder is removed.
+- If the final move fails (for example because another program has the folder open), the
+  previous export is restored automatically. In the unlikely case that the restore itself also
+  fails, the error names the backup folder so nothing is lost.
+- A destination that is a link (symlink or junction) is refused rather than replaced.
+- If the process is killed hard (power loss) mid-export, a leftover hidden `.<name>.build-*`
+  folder may remain next to your exports. It never affects the real export and is safe to
+  delete.
+
+The GUI currently has no overwrite option; export to a fresh folder or remove the old package
+first (a GUI overwrite control is planned in a later phase).
+
 ### `validate`
 
 Checks an exported package for structural integrity: required files, slice-map and metadata consistency, WAV counts, MIDI note alignment, and MPC artifact round-trip validation. Prints `Package is valid.` on success or a list of problems.

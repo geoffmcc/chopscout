@@ -2,6 +2,17 @@
 
 All notable changes to ChopScout are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- Made export replacement transactional: packages are built in a hidden sibling temporary
+  folder, fully validated there, and atomically swapped into place. Overwrites keep the
+  previous export as a temporary backup until the replacement succeeds and restore it if the
+  final move fails, so a failed export can no longer destroy or corrupt an existing package.
+- Refused symlink/junction export destinations and destinations resolving outside the output
+  folder.
+- Added failure-injection tests covering WAV, MIDI, XPM, XPJ, validation, backup, and final
+  replacement failures.
+
 ## 0.1.0
 
 - Added 16, 32, 48, and 64-slice MPC exports.

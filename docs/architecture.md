@@ -12,7 +12,7 @@ The GUI and CLI call the same application core. No audio or MPC logic lives in t
 | `analysis.py` | Deterministic DSP: onset envelope, transient detection, tempo estimation, beat grid, silence bounds, full analysis pipeline |
 | `slicing.py` | Pure marker strategies: normalization, equal/grid/transient/hybrid/manual modes, marker snapping, slice range computation |
 | `midi.py` | Standard MIDI File writing (Type 1, 960 PPQ) for groove reconstructions |
-| `exporter.py` | Package assembly, metadata/slice-map generation, export contract validation, per-package structural verification |
+| `exporter.py` | Transactional package assembly (temp-build, validate, atomic swap with backup/restore), metadata/slice-map generation, export contract validation, per-package structural verification |
 | `mpc.py` | MPC 3.9.0 XPJ/XPM generation and validation from bundled ACVS fixtures; pad/note mapping; sample and instrument configuration |
 | `validation.py` | Loop-duration validation with decoder-aware tolerance; warning formatting |
 | `playback.py` | Playback context objects mapping media-player positions back to waveform positions and active slices |
@@ -45,3 +45,20 @@ Heavy GUI work (audio loading and exporting) runs in `QThreadPool` workers via `
 - Generated MPC XPJ/XPM files are read back and structurally validated before an export is reported as successful.
 - The `validate` command re-checks any package on demand.
 - Output folders are not overwritten unless `--overwrite` is passed.
+
+## Transactional export replacement
+
+`export_package` never writes directly into the destination folder. It builds the package in a
+sibling temporary directory (`.<name>.build-<token>`, unpredictable token, same filesystem as
+the destination so the final move is a rename, not a copy), runs the full package validation
+against that temporary tree, and only then swaps it into place:
+
+1. If the destination exists, it is renamed to `.<name>.backup-<token>` (never deleted first).
+2. The validated build directory is renamed to the destination.
+3. The backup is removed only after step 2 succeeds. If step 2 fails, the backup is renamed
+   back; if that restore also fails, the error names the surviving backup path.
+
+Any failure during generation or validation leaves an existing export untouched; the temporary
+build directory is removed on every failure path. Destinations that are symlinks or junctions,
+or that resolve outside the output folder, are refused. A hard kill (power loss) can leave a
+stale `.build-*` directory behind; it is inert and safe to delete manually.

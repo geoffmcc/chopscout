@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
+import os
+import secrets
 import shutil
 from dataclasses import asdict
 from pathlib import Path
@@ -24,6 +27,8 @@ from .slicing import slice_ranges
 
 MPC_STARTING_NOTE = 36
 SUPPORTED_MPC_SLICE_COUNTS = (16, 32, 48, 64)
+
+logger = logging.getLogger(__name__)
 
 
 class ExportError(RuntimeError):
@@ -109,15 +114,110 @@ def export_package(
     output_parent: str | Path,
     settings: ExportSettings,
 ) -> Path:
+    """Export a package atomically.
+
+    The package is built in a sibling temporary directory on the same
+    filesystem, fully validated there, and only then moved into place. When
+    overwriting, the existing export is preserved as a temporary backup until
+    the replacement succeeds and is restored if the final move fails.
+    """
     ranges = slice_ranges(markers, analysis.audio.duration)
     validate_export_contract(settings, len(ranges))
-    export_format = ExportFormat(settings.export_format)
     name = deterministic_project_name(source_path, settings.bpm)
-    root = Path(output_parent) / name
-    if root.exists():
-        if not settings.overwrite:
+    parent = Path(output_parent)
+    parent.mkdir(parents=True, exist_ok=True)
+    root = parent / name
+    _ensure_safe_destination(parent, root, name)
+    if root.exists() and not settings.overwrite:
+        raise ExportError(f"Output already exists: {root}")
+    token = secrets.token_hex(8)
+    build_root = parent / f".{name}.build-{token}"
+    backup_root = parent / f".{name}.backup-{token}"
+    build_root.mkdir(parents=True, exist_ok=False)
+    try:
+        _build_package_tree(
+            build_root, source_path, data, sample_rate, analysis, markers, ranges, settings, name
+        )
+        problems = validate_package(build_root)
+        if problems:
+            raise ExportError("Export verification failed: " + "; ".join(problems))
+        _ensure_safe_destination(parent, root, name)
+        if root.exists() and not settings.overwrite:
             raise ExportError(f"Output already exists: {root}")
-        shutil.rmtree(root)
+        _replace_destination(build_root, root, backup_root)
+    finally:
+        shutil.rmtree(build_root, ignore_errors=True)
+    return root
+
+
+def _ensure_safe_destination(parent: Path, root: Path, name: str) -> None:
+    if root.is_symlink():
+        raise ExportError(f"Export destination is a link and will not be replaced: {root}")
+    if not root.exists():
+        return
+    if not root.is_dir():
+        raise ExportError(f"Export destination exists and is not a folder: {root}")
+    expected = Path(os.path.realpath(parent)) / name
+    if Path(os.path.realpath(root)) != expected:
+        raise ExportError(
+            f"Export destination resolves outside its output folder and will not be replaced: {root}"
+        )
+
+
+def _replace_destination(build_root: Path, root: Path, backup_root: Path) -> None:
+    backed_up = False
+    if root.exists():
+        try:
+            os.rename(root, backup_root)
+        except OSError as exc:
+            raise ExportError(
+                f"Could not move the existing export aside before replacement: {exc}. "
+                "Close any programs using the export folder and try again. "
+                "The existing export was not modified."
+            ) from exc
+        backed_up = True
+    try:
+        os.rename(build_root, root)
+    except OSError as exc:
+        detail = "No existing export was modified."
+        if backed_up:
+            try:
+                os.rename(backup_root, root)
+                detail = "The previous export was restored."
+            except OSError as restore_exc:
+                raise ExportError(
+                    f"Could not move the completed export into place ({exc}), and the previous "
+                    f"export could not be restored automatically ({restore_exc}). "
+                    f"The previous export is preserved at: {backup_root}"
+                ) from exc
+        raise ExportError(
+            f"Could not move the completed export into place: {exc}. {detail} "
+            "Close any programs using the export folder and try again."
+        ) from exc
+    if backed_up:
+        try:
+            shutil.rmtree(backup_root)
+        except OSError as exc:
+            logger.warning(
+                "Export replaced successfully, but the temporary backup of the previous export "
+                "could not be removed: %s. It is safe to delete manually: %s",
+                exc,
+                backup_root,
+            )
+
+
+def _build_package_tree(
+    root: Path,
+    source_path: str | Path,
+    data: np.ndarray,
+    sample_rate: int,
+    analysis: AnalysisResult,
+    markers: list[float],
+    ranges: list[tuple[float, float]],
+    settings: ExportSettings,
+    name: str,
+) -> None:
+    export_format = ExportFormat(settings.export_format)
     paths = package_paths(root, settings.mode)
     for key, value in paths.items():
         if export_format is ExportFormat.PORTABLE and key in {"mpc_project", "mpc_program"}:
@@ -274,10 +374,6 @@ Both proprietary outputs are generated from fixtures saved directly by an MPC On
     (paths["metadata"] / "chopscout.json").write_text(
         json.dumps(metadata, indent=2), encoding="utf-8"
     )
-    problems = validate_package(root)
-    if problems:
-        raise ExportError("Export verification failed: " + "; ".join(problems))
-    return root
 
 
 def validate_package(root: str | Path) -> list[str]:
