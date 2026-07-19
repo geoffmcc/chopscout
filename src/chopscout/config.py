@@ -12,10 +12,9 @@ MAX_RECENT_FILES = 20
 
 @dataclass(slots=True)
 class AppConfig:
-    # recent_files is persisted but not yet surfaced in the GUI; it is
-    # reserved for the session/recent-files workflow (roadmap phase 5).
     recent_files: list[str] = field(default_factory=list)
     last_export_dir: str = ""
+    last_session_dir: str = ""
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -28,8 +27,10 @@ class AppConfig:
                 return cls()
             known = {item.name for item in fields(cls)}
             config = cls(**{key: value for key, value in data.items() if key in known})
-            if not isinstance(config.recent_files, list) or not isinstance(
-                config.last_export_dir, str
+            if (
+                not isinstance(config.recent_files, list)
+                or not isinstance(config.last_export_dir, str)
+                or not isinstance(config.last_session_dir, str)
             ):
                 return cls()
             config.recent_files = [
@@ -38,6 +39,12 @@ class AppConfig:
             return config
         except (OSError, ValueError, TypeError, RecursionError, MemoryError):
             return cls()
+
+    def add_recent_file(self, path: str | Path) -> None:
+        """Promote a session file to the front of the recent list, deduped and capped."""
+        value = str(path)
+        self.recent_files = [value] + [item for item in self.recent_files if item != value]
+        del self.recent_files[MAX_RECENT_FILES:]
 
     def save(self) -> None:
         path = self.path()

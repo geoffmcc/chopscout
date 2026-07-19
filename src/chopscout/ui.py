@@ -39,7 +39,7 @@ from .core import (
     update_loop_duration_warning,
 )
 from .exporter import render_reconstruction
-from .models import ExportFormat, ExportSettings
+from .models import ExportFormat, ExportSettings, Session
 from .playback import (
     PlaybackContext,
     map_player_position_to_waveform,
@@ -47,9 +47,29 @@ from .playback import (
     reconstruct_playback_context,
     slice_playback_context,
 )
+from .session import (
+    SessionError,
+    SourceStatus,
+    is_remote_path,
+    load_session,
+    relink_source,
+    save_session,
+)
 from .slicing import normalize_markers, snap_marker
 
 log = logging.getLogger(__name__)
+
+SESSION_SUFFIX = ".chopscout.json"
+SESSION_FILTER = f"ChopScout session (*{SESSION_SUFFIX});;All files (*)"
+# Rewritten by save_session on every write, so they are excluded from the
+# dirty-state comparison; otherwise a freshly saved session reads as modified.
+VOLATILE_SESSION_FIELDS = ("schema_version", "app_version", "source_size")
+MAX_DISPLAYED_PATH = 200
+
+
+def display_path(value: str, limit: int = MAX_DISPLAYED_PATH) -> str:
+    """Shorten a session-supplied path so it cannot flood a dialog."""
+    return value if len(value) <= limit else value[:limit] + "…"
 
 
 class WorkerSignals(QObject):
@@ -112,6 +132,18 @@ class WaveformWidget(QWidget):
         self.dragging = None
         self.zoom = 1.0
         self.offset = 0.0
+
+    def clear(self):
+        self.peaks = np.array([], dtype=np.float32)
+        self.duration = 1.0
+        self.markers = []
+        self.beats = []
+        self.downbeat = 0.0
+        self.selected = 0
+        self.dragging = None
+        self.zoom = 1.0
+        self.offset = 0.0
+        self.reset_playback_visuals()
 
     def set_project(self, project: LoadedProject):
         self.peaks = waveform_peaks(project.data)
@@ -275,6 +307,11 @@ class MainWindow(QMainWindow):
         self.pool = QThreadPool.globalInstance()
         self.project = None
         self.config = AppConfig.load()
+        self.current_session_path: Path | None = None
+        # pad_map has no producer or consumer in the app yet; it is round-tripped
+        # verbatim so a session written by a future build is not silently dropped.
+        self.pad_map: dict[str, int] = {}
+        self._clean_snapshot: dict | None = None
         self.temp_paths = []
         self._controls_enabled = False
         self._playback_context: PlaybackContext | None = None
@@ -289,6 +326,7 @@ class MainWindow(QMainWindow):
         self._set_enabled(False)
 
     def _build(self):
+        self._build_session_menu()
         toolbar = QToolBar()
         self.addToolBar(toolbar)
         open_action = QAction("Open", self)
@@ -414,10 +452,46 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready")
 
+    def _build_session_menu(self):
+        menu = self.menuBar().addMenu("Session")
+        new_action = QAction("New", self)
+        new_action.setShortcut(QKeySequence.New)
+        new_action.triggered.connect(self.session_new)
+        menu.addAction(new_action)
+        open_action = QAction("Open Session…", self)
+        open_action.setShortcut("Ctrl+Shift+O")
+        open_action.triggered.connect(self.session_open)
+        menu.addAction(open_action)
+        menu.addSeparator()
+        self.save_session_action = QAction("Save Session", self)
+        self.save_session_action.setShortcut(QKeySequence.Save)
+        self.save_session_action.triggered.connect(self.session_save)
+        menu.addAction(self.save_session_action)
+        self.save_session_as_action = QAction("Save Session As…", self)
+        self.save_session_as_action.setShortcut(QKeySequence.SaveAs)
+        self.save_session_as_action.triggered.connect(self.session_save_as)
+        menu.addAction(self.save_session_as_action)
+        menu.addSeparator()
+        self.recent_menu = menu.addMenu("Recent Sessions")
+        self._refresh_recent_menu()
+
+    def _refresh_recent_menu(self):
+        self.recent_menu.clear()
+        if not self.config.recent_files:
+            empty = self.recent_menu.addAction("No recent sessions")
+            empty.setEnabled(False)
+            return
+        for item in self.config.recent_files:
+            action = self.recent_menu.addAction(Path(item).name)
+            action.setToolTip(item)
+            action.triggered.connect(lambda _checked=False, path=item: self._open_session_path(path))
+
     def _set_enabled(self, value):
         self._controls_enabled = value
         for w in [
             self.export_action,
+            self.save_session_action,
+            self.save_session_as_action,
             self.bpm,
             self.half,
             self.double,
@@ -459,7 +533,12 @@ class MainWindow(QMainWindow):
             self.load(path)
 
     def load(self, path):
+        if not self._confirm_discard("Open audio"):
+            return
         self.stop_playback()
+        # Plain audio starts an untitled session; Save must ask where to write it.
+        self.current_session_path = None
+        self.pad_map = {}
         self.statusBar().showMessage("Analyzing audio…")
         self._set_enabled(False)
         worker = LoadWorker(path, self.mode.currentText(), self.sensitivity.value())
@@ -489,6 +568,9 @@ class MainWindow(QMainWindow):
         self.confidence.setText(f"Tempo: {label} ({c:.2f})")
         self._update_info()
         self._set_enabled(True)
+        # Freshly analyzed audio is the baseline, not unsaved work; edits from
+        # here are what make the session dirty.
+        self._mark_clean()
         self.statusBar().showMessage("Analysis complete")
 
     def failed(self, message):
@@ -561,6 +643,7 @@ class MainWindow(QMainWindow):
         self.info.setText(
             f"{Path(self.project.path).name}\n{self.project.analysis.audio.duration:.2f}s · {self.project.sample_rate} Hz · {self.project.analysis.audio.channels} ch\n{len(self.project.markers)} slices · mode {self.project.mode}\n\n{warn}"
         )
+        self._update_window_title()
 
     def _mode_pad_count(self, mode):
         return {"equal16": 16, "equal32": 32, "equal48": 48, "equal64": 64}.get(mode)
@@ -638,8 +721,9 @@ class MainWindow(QMainWindow):
         self._adopt_manual_markers(marks)
 
     def selection_changed(self, index):
-        if not self.project:
+        if not self.project or not self.project.markers:
             return
+        index = min(max(index, 0), len(self.project.markers) - 1)
         end = (
             self.project.markers[index + 1]
             if index + 1 < len(self.project.markers)
@@ -755,6 +839,329 @@ class MainWindow(QMainWindow):
             export_format=ExportFormat(self.export_format.currentText()),
             pad_count=self._mode_pad_count(self.project.mode),
         )
+
+    # ----- session workflow -------------------------------------------------
+
+    def _session_from_state(self) -> Session:
+        """Capture the live widget and project state as a Session."""
+        analysis = self.project.analysis
+        settings = self._export_settings()
+        return Session(
+            source_path=str(self.project.path),
+            source_hash=analysis.audio.source_hash,
+            detected_bpm=analysis.detected_bpm,
+            selected_bpm=self.bpm.value(),
+            bar_count=self.bars.value(),
+            downbeat=self.downbeat.value(),
+            markers=list(self.project.markers),
+            chop_mode=self.project.mode,
+            pad_map=dict(self.pad_map),
+            export_settings={
+                "mode": settings.mode,
+                "starting_note": settings.starting_note,
+                "bars": settings.bars,
+                "bpm": settings.bpm,
+                "short_fades_ms": settings.short_fades_ms,
+                "overwrite": settings.overwrite,
+                "export_format": str(settings.export_format),
+                "pad_count": settings.pad_count,
+            },
+        )
+
+    def _state_snapshot(self) -> dict | None:
+        if not self.project:
+            return None
+        data = self._session_from_state().to_dict()
+        for key in VOLATILE_SESSION_FIELDS:
+            data.pop(key, None)
+        return data
+
+    def is_dirty(self) -> bool:
+        """True when the live state differs from the last saved or loaded session."""
+        return self._state_snapshot() != self._clean_snapshot
+
+    def _mark_clean(self):
+        self._clean_snapshot = self._state_snapshot()
+        self._update_window_title()
+
+    def _update_window_title(self):
+        name = self.current_session_path.name if self.current_session_path else "Untitled"
+        marker = "*" if self.is_dirty() else ""
+        self.setWindowTitle(f"ChopScout — {name}{marker}")
+
+    def _apply_session(self, session: Session):
+        """Overlay a loaded session onto the freshly analyzed project.
+
+        `loaded()` rebuilds widgets from the analysis, which cannot reproduce
+        saved manual markers or the export controls it never touches, so the
+        session's own values are applied on top of it here.
+        """
+        analysis = self.project.analysis
+        duration = analysis.audio.duration
+        # The session core allows far wider values than the controls do (BPM to
+        # 1e5, downbeat to +/-1e6). Clamping first keeps the model and the widgets
+        # in agreement and keeps beat_grid from walking billions of steps.
+        bpm = min(max(session.selected_bpm, self.bpm.minimum()), self.bpm.maximum())
+        downbeat = min(max(session.downbeat, 0.0), duration)
+        bar_count = int(min(max(session.bar_count, self.bars.minimum()), self.bars.maximum()))
+        markers = normalize_markers(session.markers, duration)
+        analysis.selected_bpm = bpm
+        analysis.downbeat = downbeat
+        analysis.beat_times = beat_grid(duration, bpm, downbeat)
+        self.project.mode = session.chop_mode
+        self.project.markers = markers
+        self.pad_map = dict(session.pad_map)
+        for widget, value in [
+            (self.bpm, bpm),
+            (self.bars, bar_count),
+            (self.downbeat, downbeat),
+        ]:
+            widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(False)
+        self.mode.blockSignals(True)
+        self.mode.setCurrentText(session.chop_mode)
+        self.mode.blockSignals(False)
+        settings = session.export_settings
+        if isinstance(settings.get("export_format"), str):
+            self.export_format.blockSignals(True)
+            self.export_format.setCurrentText(settings["export_format"])
+            self.export_format.blockSignals(False)
+        if isinstance(settings.get("overwrite"), bool):
+            self.overwrite.setChecked(settings["overwrite"])
+        if isinstance(settings.get("starting_note"), int):
+            self.start_note.blockSignals(True)
+            self.start_note.setValue(settings["starting_note"])
+            self.start_note.blockSignals(False)
+        self._sync_pad_count_to_mode(self.project.mode)
+        self._sync_export_format_controls()
+        self.wave.set_active_slices(self.project.markers)
+        self.wave.downbeat = downbeat
+        self.wave.beats = analysis.beat_times
+        self.wave.update()
+        update_loop_duration_warning(analysis, bpm, bar_count)
+        self.selection_changed(min(self.wave.selected, max(0, len(self.project.markers) - 1)))
+        self._update_info()
+
+    def session_new(self):
+        if not self._confirm_discard("New session"):
+            return
+        self.stop_playback()
+        self.project = None
+        self.current_session_path = None
+        self.pad_map = {}
+        self.wave.clear()
+        self._set_enabled(False)
+        self.info.setText("Drop a break here.")
+        self.slice_label.setText("No slice selected")
+        self.confidence.setText("—")
+        self._mark_clean()
+        self.statusBar().showMessage("New session")
+
+    def session_open(self):
+        if not self._confirm_discard("Open session"):
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open session",
+            self.config.last_session_dir or str(Path.home()),
+            SESSION_FILTER,
+        )
+        if path:
+            self._open_session_path(path, confirmed=True)
+
+    def _open_session_path(self, path, confirmed: bool = False):
+        if not confirmed and not self._confirm_discard("Open session"):
+            return
+        try:
+            session, status = load_session(path)
+        except SessionError as exc:
+            self.failed(str(exc))
+            return
+        original_source = session.source_path
+        if not self._resolve_source(session, status):
+            return
+        self._restore_session(session, Path(path), relinked=session.source_path != original_source)
+
+    def _restore_session(self, session: Session, path: Path, relinked: bool = False):
+        self.stop_playback()
+        self.statusBar().showMessage("Restoring session…")
+        self._set_enabled(False)
+        worker = LoadWorker(session.source_path, session.chop_mode, self.sensitivity.value())
+        worker.signals.done.connect(
+            lambda project: self._session_loaded(project, session, path, relinked)
+        )
+        worker.signals.failed.connect(self.failed)
+        self.pool.start(worker)
+
+    def _session_loaded(self, project, session: Session, path: Path, relinked: bool):
+        self.loaded(project)
+        self._apply_session(session)
+        # Only adopt the file once the audio actually loaded, so a failed restore
+        # cannot leave Save pointed at it or advertise it as a recent session.
+        self.current_session_path = path
+        self._remember_session(path)
+        if relinked:
+            # The new source path is an unsaved edit until the user saves it.
+            self.statusBar().showMessage("Session restored — relinked source is unsaved")
+        else:
+            self._mark_clean()
+            self.statusBar().showMessage("Session restored")
+        self._update_window_title()
+
+    def _ask(self, icon, title, text, buttons, default):
+        """Modal question whose body may contain untrusted, session-supplied text."""
+        box = QMessageBox(icon, title, text, buttons, self)
+        box.setTextFormat(Qt.PlainText)
+        box.setDefaultButton(default)
+        return box.exec()
+
+    def _resolve_source(self, session: Session, status) -> bool:
+        """Handle a session whose source audio is missing, changed, or unchecked.
+
+        Returns True when the session should still be opened.
+        """
+        if status == SourceStatus.OK:
+            return True
+        shown = display_path(session.source_path)
+        if status == SourceStatus.UNVERIFIED:
+            # The session core refuses to probe network paths, so opening one is
+            # a decision the user has to make: it contacts an arbitrary host.
+            choice = self._ask(
+                QMessageBox.Warning,
+                "Network source",
+                f"This session points at a network location:\n\n{shown}\n\n"
+                "Opening it will contact that host. Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            return choice == QMessageBox.Yes
+        if status == SourceStatus.MISSING:
+            choice = self._ask(
+                QMessageBox.Warning,
+                "Source audio missing",
+                f"The audio this session refers to was not found:\n\n{shown}\n\n"
+                "Locate the file to relink the session?",
+                QMessageBox.Open | QMessageBox.Cancel,
+                QMessageBox.Open,
+            )
+            if choice != QMessageBox.Open:
+                return False
+            return self._relink(session)
+        choice = self._ask(
+            QMessageBox.Warning,
+            "Source audio changed",
+            f"The audio this session refers to has changed since it was saved:\n\n"
+            f"{shown}\n\nMarkers may no longer line up.",
+            QMessageBox.Open | QMessageBox.Ignore | QMessageBox.Cancel,
+            QMessageBox.Ignore,
+        )
+        if choice == QMessageBox.Cancel:
+            return False
+        if choice == QMessageBox.Open:
+            return self._relink(session)
+        return True
+
+    def _relink(self, session: Session) -> bool:
+        """Re-point a session at moved audio. The change stays in memory until saved."""
+        start = Path(session.source_path).parent
+        # Never seed the dialog with a network directory; browsing it reaches out.
+        directory = str(Path.home()) if is_remote_path(session.source_path) else str(start)
+        new_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Locate source audio",
+            directory,
+            "Audio (*.wav *.aif *.aiff *.flac *.mp3 *.ogg *.m4a);;All files (*)",
+        )
+        if not new_path:
+            return False
+        try:
+            relink_source(session, new_path)
+        except SessionError:
+            # The replacement is different audio, so rebinding must be deliberate.
+            confirm = self._ask(
+                QMessageBox.Warning,
+                "Different audio",
+                f"{display_path(Path(new_path).name)} is not the audio this session was "
+                "built from.\n\nRelink anyway? The session's markers were made for the "
+                "original file.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return False
+            try:
+                relink_source(session, new_path, allow_changed=True)
+            except SessionError as exc:
+                self.failed(str(exc))
+                return False
+        return True
+
+    def session_save(self) -> bool:
+        if not self.project:
+            return False
+        if self.current_session_path is None:
+            return self.session_save_as()
+        return self._write_session(self.current_session_path)
+
+    def session_save_as(self) -> bool:
+        if not self.project:
+            return False
+        suggested = Path(self.config.last_session_dir or str(Path.home())) / (
+            Path(self.project.path).stem + SESSION_SUFFIX
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save session", str(suggested), SESSION_FILTER
+        )
+        if not path:
+            return False
+        target = Path(path)
+        if not target.name.endswith(SESSION_SUFFIX):
+            target = target.with_name(target.stem + SESSION_SUFFIX)
+        return self._write_session(target)
+
+    def _write_session(self, path: Path) -> bool:
+        try:
+            save_session(path, self._session_from_state())
+        except SessionError as exc:
+            self.failed(str(exc))
+            return False
+        self.current_session_path = path
+        self._remember_session(path)
+        self._mark_clean()
+        self.statusBar().showMessage(f"Session saved: {path}")
+        return True
+
+    def _remember_session(self, path: Path):
+        self.config.add_recent_file(path)
+        self.config.last_session_dir = str(path.parent)
+        try:
+            self.config.save()
+        except OSError:
+            # Recent-files bookkeeping must never fail an otherwise good save.
+            log.exception("could not persist config")
+        self._refresh_recent_menu()
+
+    def _confirm_discard(self, title: str) -> bool:
+        """Ask before losing unsaved work. Returns True when it is safe to continue."""
+        if not self.is_dirty():
+            return True
+        choice = QMessageBox.warning(
+            self,
+            title,
+            "This session has unsaved changes.",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if choice == QMessageBox.Save:
+            return self.session_save()
+        return choice == QMessageBox.Discard
+
+    def closeEvent(self, event):
+        if self._confirm_discard("Quit ChopScout"):
+            event.accept()
+        else:
+            event.ignore()
 
     def exported(self, path):
         self._set_enabled(True)

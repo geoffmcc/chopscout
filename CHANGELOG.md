@@ -4,6 +4,15 @@ All notable changes to ChopScout are documented here. The project follows [Seman
 
 ## Unreleased
 
+- Added the GUI session workflow on top of the session core: a Session menu (New, Open, Save,
+  Save As) with a recent-sessions list, unsaved-changes prompts before opening or quitting, a
+  window title that marks unsaved work, and a relink flow that locates moved source audio and
+  requires explicit confirmation before rebinding a session to different audio. Restoring a
+  session reapplies its saved markers, tempo, downbeat, and export settings over the
+  reanalyzed audio, so manual chops survive a round trip. Opening a session whose source
+  lives on a network path now asks first rather than contacting the host automatically,
+  session values are clamped to the ranges the controls accept before use, and a session
+  file is only adopted as the current document once its audio has actually loaded.
 - Hardened the session core ahead of the GUI session workflow: sessions are now versioned
   (schema 2) with forward migration from the legacy format and rejection of newer formats;
   loading validates untrusted session files (types, finite numbers, size and marker caps)

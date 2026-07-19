@@ -17,12 +17,12 @@ The GUI and CLI call the same application core. No audio or MPC logic lives in t
 | `validation.py` | Loop-duration validation with decoder-aware tolerance; warning formatting |
 | `playback.py` | Playback context objects mapping media-player positions back to waveform positions and active slices |
 | `session.py` | Versioned session persistence: atomic save, migrating/validating load of untrusted session files (schema versioning, forward-migration, future-version rejection), source-audio hash checking (ok/missing/changed), and source relinking |
-| `config.py` | GUI configuration persistence via platformdirs |
+| `config.py` | GUI configuration persistence via platformdirs, including the recent-sessions list |
 | `logging_config.py` | File and console logging setup via platformdirs |
 | `core.py` | Orchestration: `load_project`, `change_mode`, `export_project` |
 | `models.py` | Dataclasses: `AudioInfo`, `AnalysisResult`, `ExportSettings`, `Session`, etc. |
 | `cli.py` | Argparse CLI with `analyze`, `export`, and `validate` subcommands |
-| `ui.py` | PySide6 main window, waveform widget, transport, workers |
+| `ui.py` | PySide6 main window, waveform widget, transport, workers, and the session workflow (menu, dirty state, relink, recent sessions) |
 | `app.py` | QApplication entry point with dark stylesheet |
 
 ## Bundled resources

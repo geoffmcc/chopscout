@@ -34,7 +34,7 @@ def save_session(path: str | Path, session: Session) -> None:
     """Write a session atomically (exclusive temp file + rename) in the current schema."""
     session.schema_version = SESSION_SCHEMA_VERSION
     session.app_version = __version__
-    if session.source_size <= 0 and not _is_remote_path(session.source_path):
+    if session.source_size <= 0 and not is_remote_path(session.source_path):
         session.source_size = _probe_source_size(session.source_path)
     destination = Path(path)
     payload = json.dumps(session.to_dict(), indent=2)
@@ -105,7 +105,8 @@ def _reject_constant(value: str) -> float:
     raise ValueError(f"unsupported JSON constant: {value}")
 
 
-def _is_remote_path(value: str) -> bool:
+def is_remote_path(value: str) -> bool:
+    """True for UNC/network paths, which are never probed automatically."""
     return value.startswith(("\\\\", "//"))
 
 
@@ -265,7 +266,7 @@ def _validated_export_settings(raw: dict[str, Any], fail) -> dict[str, Any]:
 def _source_status(session: Session, verify_source: bool) -> SourceStatus:
     if not verify_source:
         return SourceStatus.UNVERIFIED
-    if _is_remote_path(session.source_path):
+    if is_remote_path(session.source_path):
         # Never probe UNC/network paths automatically; the caller must decide.
         return SourceStatus.UNVERIFIED
     source = Path(session.source_path)
