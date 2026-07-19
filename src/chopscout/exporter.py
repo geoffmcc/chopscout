@@ -408,7 +408,6 @@ Both proprietary outputs are generated from fixtures saved directly by an MPC On
 
     metadata["mpc_project_generated"] = mpc_project_generated
     metadata["mpc_program_generated"] = mpc_program_generated
-    metadata["proprietary_mpc_program_generated"] = mpc_project_generated or mpc_program_generated
     metadata["mpc_project_error"] = mpc_project_error
     metadata["mpc_program_error"] = mpc_program_error
     (paths["metadata"] / "chopscout.json").write_text(

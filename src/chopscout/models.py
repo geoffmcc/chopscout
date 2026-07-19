@@ -22,16 +22,16 @@ class AudioInfo:
 
 @dataclass(slots=True)
 class TempoHypothesis:
+    """A ranked tempo candidate.
+
+    Reserved for the multi-hypothesis tempo work (analysis-improvement roadmap
+    phase). `analysis.estimate_tempo` does not produce these yet; nothing
+    outside that future work should depend on this class.
+    """
+
     bpm: float
     confidence: float
     label: str = "main"
-
-
-@dataclass(slots=True)
-class SliceMarker:
-    seconds: float
-    name: str = ""
-    strength: float = 0.0
 
 
 @dataclass(slots=True)
@@ -71,7 +71,6 @@ class ExportSettings:
     starting_note: int = 36
     bars: int = 4
     bpm: float = 120.0
-    trim_silence: bool = False
     short_fades_ms: float = 2.0
     overwrite: bool = False
     export_format: ExportFormat = ExportFormat.BOTH

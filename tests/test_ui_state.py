@@ -250,3 +250,16 @@ def test_gui_export_format_changes_do_not_leave_stale_control_state(app, tmp_pat
     assert window.export_format.currentText() == ExportFormat.PORTABLE.value
 
     window.close()
+
+
+def test_gui_overwrite_checkbox_defaults_off_and_flows_into_settings(app, tmp_path: Path):
+    window = MainWindow()
+    window.loaded(make_project(tmp_path / "one.wav", "equal16"))
+
+    assert not window.overwrite.isChecked()
+    assert window._export_settings().overwrite is False
+
+    window.overwrite.setChecked(True)
+    assert window._export_settings().overwrite is True
+
+    window.close()

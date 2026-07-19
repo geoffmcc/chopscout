@@ -97,8 +97,8 @@ until the replacement has fully succeeded:
   folder may remain next to your exports. It never affects the real export and is safe to
   delete.
 
-The GUI currently has no overwrite option; export to a fresh folder or remove the old package
-first (a GUI overwrite control is planned in a later phase).
+The GUI exposes the same behavior through the Overwrite checkbox in the export form (off by
+default, so an existing export is never replaced unless you ask).
 
 ### `validate`
 
@@ -156,7 +156,7 @@ Pad mapping is deterministic across Banks A-D:
 | C | 33-48 | 68-83 | `C01`-`C16` |
 | D | 49-64 | 84-99 | `D01`-`D16` |
 
-Bank A is hardware-validated on an MPC One+ running MPC 3.9.0. Banks B, C, and D are confirmed through hardware testing. See [MPC compatibility](docs/mpc_compatibility.md) for details.
+Banks A-D are hardware-verified on an MPC One+ running MPC 3.9.0.31. See [MPC compatibility](docs/mpc_compatibility.md) for details.
 
 ## GUI
 
@@ -258,7 +258,8 @@ The GUI stores its configuration and logs under the Windows local app data direc
 - Config: `%LOCALAPPDATA%\ChopScout\ChopScout\config.json`
 - Logs: `%LOCALAPPDATA%\ChopScout\ChopScout\Logs\chopscout.log`
 
-The config file records recent files, last export directory, and theme. It is created automatically and can be deleted safely.
+The config file records the last export directory (plus a reserved recent-files list for the
+upcoming session workflow). It is created automatically and can be deleted safely.
 
 ## Safety
 
