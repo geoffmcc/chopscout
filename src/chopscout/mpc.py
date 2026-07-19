@@ -39,19 +39,33 @@ class MpcProgramResult:
     sample_paths: tuple[Path, ...]
 
 
-def xpj_export_available() -> bool:
-    return True
+@dataclass(frozen=True, slots=True)
+class MpcCompatibility:
+    """Single source of truth for ChopScout's MPC support claims.
+
+    CLI output, GUI status, tests, and documentation must derive from (or
+    agree with) this structure rather than restating the facts independently.
+    """
+
+    firmware: str
+    supported_slice_counts: tuple[int, ...]
+    hardware_verified_banks: tuple[str, ...]
 
 
-def xpm_export_available() -> bool:
-    return True
+MPC_COMPATIBILITY = MpcCompatibility(
+    firmware="3.9.0.31",
+    supported_slice_counts=SUPPORTED_PAD_COUNTS,
+    hardware_verified_banks=("A", "B", "C", "D"),
+)
 
 
 def explain_xpm_status() -> str:
+    counts = ", ".join(str(count) for count in MPC_COMPATIBILITY.supported_slice_counts)
+    banks = MPC_COMPATIBILITY.hardware_verified_banks
     return (
-        "MPC 3.9.0 XPJ and XPM export supports 16, 32, 48, or 64 slices across "
-        "Banks A-D. Bank A is hardware-verified; Banks B-C are supported by populated "
-        "MPC fixtures; Bank D uses the same confirmed slot pattern and awaits final hardware confirmation."
+        f"MPC 3.9.0 XPJ and XPM export supports {counts} slices across Banks "
+        f"{banks[0]}-{banks[-1]}. Banks {banks[0]}-{banks[-1]} are hardware-verified on an "
+        f"MPC One+ running MPC {MPC_COMPATIBILITY.firmware}."
     )
 
 

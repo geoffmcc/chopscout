@@ -1,6 +1,9 @@
 # MPC One+ 3.9.0 hardware validation checklist
 
-Complete this checklist before publishing a release. Use a generated 64-pad package covering Banks A-D.
+Complete this checklist when validating a new MPC firmware version or after changes to MPC
+artifact generation. Use a generated 64-pad package covering Banks A-D. The currently
+recorded status lives in `mpc.MPC_COMPATIBILITY` and
+[mpc_compatibility.md](mpc_compatibility.md): Banks A-D validated on MPC One+ 3.9.0.31.
 
 ## Project (XPJ)
 

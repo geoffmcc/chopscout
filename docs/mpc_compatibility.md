@@ -28,11 +28,15 @@ The fixture contains at least 64 instrument slots. Used pads are configured with
 
 ## Hardware validation status
 
-- **Bank A**: hardware-validated on MPC One+ running MPC 3.9.0.
-- **Banks B and C**: confirmed through hardware testing with populated MPC programs.
-- **Bank D**: generated from the same sequential 16-slot structure and confirmed through hardware testing.
+- **Banks A-D**: hardware-validated on an MPC One+ running MPC 3.9.0.31, covering the 16, 32,
+  48, and 64-slice exports.
 
-See [Hardware validation checklist](hardware_validation_checklist.md).
+The authoritative status lives in code as `mpc.MPC_COMPATIBILITY`; `mpc.explain_xpm_status()`
+derives its text from it, and a test asserts they stay consistent. Documentation must agree
+with that structure — update both together when validation status changes.
+
+See [Hardware validation checklist](hardware_validation_checklist.md) for the procedure used
+to (re)validate a firmware version.
 
 ## Required folders
 

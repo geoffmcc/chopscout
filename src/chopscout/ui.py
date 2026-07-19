@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThreadPool,
 from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -353,6 +354,8 @@ class MainWindow(QMainWindow):
         )
         self.pad_count.currentIndexChanged.connect(self.pad_count_changed)
         form.addRow("MPC layout", self.pad_count)
+        self.overwrite = QCheckBox("Replace an existing export with the same name")
+        form.addRow("Overwrite", self.overwrite)
         self.sensitivity = QDoubleSpinBox()
         self.sensitivity.setRange(0.35, 0.9)
         self.sensitivity.setSingleStep(0.05)
@@ -422,6 +425,7 @@ class MainWindow(QMainWindow):
             self.mode,
             self.export_format,
             self.pad_count,
+            self.overwrite,
             self.sensitivity,
             self.snap,
             self.start_note,
@@ -747,6 +751,7 @@ class MainWindow(QMainWindow):
             starting_note=self.start_note.value(),
             bars=self.bars.value(),
             bpm=self.bpm.value(),
+            overwrite=self.overwrite.isChecked(),
             export_format=ExportFormat(self.export_format.currentText()),
             pad_count=self._mode_pad_count(self.project.mode),
         )

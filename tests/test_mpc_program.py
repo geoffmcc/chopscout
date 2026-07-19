@@ -1,10 +1,13 @@
 from pathlib import Path
 
+from chopscout.exporter import SUPPORTED_MPC_SLICE_COUNTS
 from chopscout.mpc import (
+    MPC_COMPATIBILITY,
+    SUPPORTED_PAD_COUNTS,
     create_mpc39_program,
+    explain_xpm_status,
     read_xpm,
     validate_generated_mpc_program,
-    xpm_export_available,
 )
 
 
@@ -23,7 +26,6 @@ def test_create_hardware_template_program(tmp_path: Path) -> None:
         bpm=172.0,
     )
 
-    assert xpm_export_available()
     validate_generated_mpc_program(result.program_dir)
     header, document = read_xpm(result.xpm_path)
     assert b"3.9.0.31" in header
@@ -52,3 +54,14 @@ def test_create_64_pad_program(tmp_path: Path) -> None:
     assert document["data"]["drum"]["instruments"][63]["layersv"][0]["sampleFile"] == "D16.wav"
     assert document["data"]["padNoteMap"]["noteForPad"]["value63"] == 99
     assert (result.program_data_dir / "D16.wav").is_file()
+
+
+def test_compatibility_source_of_truth_is_consistent() -> None:
+    assert MPC_COMPATIBILITY.supported_slice_counts == SUPPORTED_PAD_COUNTS
+    assert MPC_COMPATIBILITY.supported_slice_counts == SUPPORTED_MPC_SLICE_COUNTS
+    assert MPC_COMPATIBILITY.hardware_verified_banks == ("A", "B", "C", "D")
+    status = explain_xpm_status()
+    assert MPC_COMPATIBILITY.firmware in status
+    for count in MPC_COMPATIBILITY.supported_slice_counts:
+        assert str(count) in status
+    assert "hardware-verified" in status
