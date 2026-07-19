@@ -4,6 +4,15 @@ All notable changes to ChopScout are documented here. The project follows [Seman
 
 ## Unreleased
 
+- Added autosave and crash recovery. While a session has unsaved changes it is written once a
+  minute to a single recovery slot in the user state directory, atomically, so a partial write
+  cannot survive. A clean exit clears the slot, so finding one at startup means the last run
+  crashed: ChopScout then offers to recover that work, loading it as unsaved so nothing is
+  overwritten silently. Saving clears the slot. A structurally invalid slot is discarded rather
+  than blocking startup, while one that is merely unreadable at that moment (locked by another
+  process, for instance) is kept and retried, and a failing autosave never interrupts the
+  session it is protecting.
+
 - Added the GUI session workflow on top of the session core: a Session menu (New, Open, Save,
   Save As) with a recent-sessions list, unsaved-changes prompts before opening or quitting, a
   window title that marks unsaved work, and a relink flow that locates moved source audio and

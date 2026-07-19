@@ -2,10 +2,22 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QObject, QPointF, QRectF, QRunnable, Qt, QThreadPool, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    QObject,
+    QPointF,
+    QRectF,
+    QRunnable,
+    Qt,
+    QThreadPool,
+    QTimer,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -30,6 +42,7 @@ from PySide6.QtWidgets import (
 
 from .analysis import beat_grid
 from .audio import waveform_peaks, write_wav
+from .autosave import AutosaveUnreadable, clear_autosave, read_autosave, write_autosave
 from .config import AppConfig
 from .core import (
     LoadedProject,
@@ -48,8 +61,10 @@ from .playback import (
     slice_playback_context,
 )
 from .session import (
+    SESSION_SUFFIX,
     SessionError,
     SourceStatus,
+    check_source,
     is_remote_path,
     load_session,
     relink_source,
@@ -59,17 +74,22 @@ from .slicing import normalize_markers, snap_marker
 
 log = logging.getLogger(__name__)
 
-SESSION_SUFFIX = ".chopscout.json"
 SESSION_FILTER = f"ChopScout session (*{SESSION_SUFFIX});;All files (*)"
 # Rewritten by save_session on every write, so they are excluded from the
 # dirty-state comparison; otherwise a freshly saved session reads as modified.
 VOLATILE_SESSION_FIELDS = ("schema_version", "app_version", "source_size")
 MAX_DISPLAYED_PATH = 200
+AUTOSAVE_INTERVAL_MS = 60_000
 
 
 def display_path(value: str, limit: int = MAX_DISPLAYED_PATH) -> str:
-    """Shorten a session-supplied path so it cannot flood a dialog."""
-    return value if len(value) <= limit else value[:limit] + "…"
+    """Make a session-supplied path safe to show: no control characters, bounded.
+
+    Dialogs render as plain text, but newlines would still let a crafted path
+    fabricate extra lines of message above the question being asked.
+    """
+    cleaned = "".join(character if character.isprintable() else "?" for character in value)
+    return cleaned if len(cleaned) <= limit else cleaned[:limit] + "…"
 
 
 class WorkerSignals(QObject):
@@ -324,6 +344,10 @@ class MainWindow(QMainWindow):
         self.player.mediaStatusChanged.connect(self.player_media_status_changed)
         self._build()
         self._set_enabled(False)
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.setInterval(AUTOSAVE_INTERVAL_MS)
+        self.autosave_timer.timeout.connect(self.autosave)
+        self.autosave_timer.start()
 
     def _build(self):
         self._build_session_menu()
@@ -981,32 +1005,56 @@ class MainWindow(QMainWindow):
         original_source = session.source_path
         if not self._resolve_source(session, status):
             return
-        self._restore_session(session, Path(path), relinked=session.source_path != original_source)
+        relinked = session.source_path != original_source
+        self._restore_session(
+            session,
+            Path(path),
+            unsaved=relinked,
+            message=(
+                "Session restored — relinked source is unsaved"
+                if relinked
+                else "Session restored"
+            ),
+        )
 
-    def _restore_session(self, session: Session, path: Path, relinked: bool = False):
+    def _restore_session(
+        self,
+        session: Session,
+        path: Path | None,
+        unsaved: bool = False,
+        message: str = "Session restored",
+    ):
         self.stop_playback()
         self.statusBar().showMessage("Restoring session…")
         self._set_enabled(False)
         worker = LoadWorker(session.source_path, session.chop_mode, self.sensitivity.value())
         worker.signals.done.connect(
-            lambda project: self._session_loaded(project, session, path, relinked)
+            lambda project: self._session_loaded(project, session, path, unsaved, message)
         )
         worker.signals.failed.connect(self.failed)
         self.pool.start(worker)
 
-    def _session_loaded(self, project, session: Session, path: Path, relinked: bool):
+    def _session_loaded(
+        self,
+        project,
+        session: Session,
+        path: Path | None,
+        unsaved: bool = False,
+        message: str = "Session restored",
+    ):
         self.loaded(project)
         self._apply_session(session)
         # Only adopt the file once the audio actually loaded, so a failed restore
         # cannot leave Save pointed at it or advertise it as a recent session.
-        self.current_session_path = path
-        self._remember_session(path)
-        if relinked:
-            # The new source path is an unsaved edit until the user saves it.
-            self.statusBar().showMessage("Session restored — relinked source is unsaved")
+        if path is not None:
+            self.current_session_path = path
+            self._remember_session(path)
+        if unsaved:
+            # Recovered or relinked state is unsaved work until the user saves it.
+            self.statusBar().showMessage(message)
         else:
             self._mark_clean()
-            self.statusBar().showMessage("Session restored")
+            self.statusBar().showMessage(message)
         self._update_window_title()
 
     def _ask(self, icon, title, text, buttons, default):
@@ -1129,6 +1177,8 @@ class MainWindow(QMainWindow):
         self.current_session_path = path
         self._remember_session(path)
         self._mark_clean()
+        # The work is on disk now, so the recovery slot is stale.
+        clear_autosave()
         self.statusBar().showMessage(f"Session saved: {path}")
         return True
 
@@ -1157,11 +1207,70 @@ class MainWindow(QMainWindow):
             return self.session_save()
         return choice == QMessageBox.Discard
 
+    def autosave(self):
+        """Persist unsaved work to the recovery slot. Never raises: a failing
+        autosave must not interrupt or crash the session it is protecting."""
+        if not self.project or not self.is_dirty():
+            return
+        try:
+            write_autosave(self._session_from_state(), self.current_session_path, time.time())
+        except (SessionError, OSError, ValueError):
+            log.exception("autosave failed")
+
+    def offer_recovery(self) -> bool:
+        """Offer to restore an autosave left behind by an unclean shutdown.
+
+        Called at startup rather than from __init__ so constructing a window
+        never blocks on a dialog. Returns True when a recovery was started.
+        """
+        try:
+            record = read_autosave()
+        except AutosaveUnreadable:
+            # Present but unreadable right now; keep it rather than destroying
+            # the only copy of the user's unsaved work.
+            log.exception("autosave slot could not be read")
+            return False
+        if record is None:
+            # Nothing usable; drop any invalid remnant so it cannot linger.
+            clear_autosave()
+            return False
+        when = (
+            time.strftime("%Y-%m-%d %H:%M", time.localtime(record.saved_at))
+            if record.saved_at
+            else "at an unknown time"
+        )
+        origin = display_path(record.session_path) if record.session_path else "an unsaved session"
+        choice = self._ask(
+            QMessageBox.Warning,
+            "Recover unsaved work",
+            f"ChopScout closed unexpectedly with unsaved changes to {origin}.\n\n"
+            f"Autosaved {when}.\n\nRecover that work?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if choice != QMessageBox.Yes:
+            clear_autosave()
+            return False
+        # Verify the audio only now that the user has asked for this session.
+        if not self._resolve_source(record.session, check_source(record.session)):
+            return False
+        path = Path(record.session_path) if record.session_path else None
+        self._restore_session(
+            record.session,
+            path,
+            unsaved=True,
+            message="Recovered unsaved work — save it to keep it",
+        )
+        return True
+
     def closeEvent(self, event):
-        if self._confirm_discard("Quit ChopScout"):
-            event.accept()
-        else:
+        if not self._confirm_discard("Quit ChopScout"):
             event.ignore()
+            return
+        # A clean exit leaves no slot behind, so a slot at startup means a crash.
+        self.autosave_timer.stop()
+        clear_autosave()
+        event.accept()
 
     def exported(self, path):
         self._set_enabled(True)
